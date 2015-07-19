@@ -116,7 +116,7 @@ __global__ void parallelSieveKernel(
 	big L = range * i + sqrt_N;
 	big R = range + L;
 
-	if (i == 0)
+	if (threadIdx.x == 0)
 	{
 		for (int i=0; i<=48000; i++)
 			primes[i] = d_S[i];
