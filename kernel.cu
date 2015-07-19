@@ -26,13 +26,6 @@
 typedef unsigned long long big;
 
 // GLOBAL VARIABLES--------------------------------------
-
-typedef struct Wheel_t	// Struct-of-Arrays Wheel
-{
-	bool * rp;	// Numbers relatively prime to m
-	big * dist; // D s.t. x + d is the smallest integer >dist[x] relatively prime to m
-} Wheel_k;
-
 bool * S;	// Global shared bit array of numbers up to N
 int P;		// Global number of processors
 
@@ -43,11 +36,6 @@ struct timezone myTimezone;
 struct timeval startTime, endTime;
 
 // HOST FUNCTION HEADERS---------------------------------
-
-/*	gcd
-	Host version of the Euclidean Method
-*/
-__host__ big gcd(big u, big v);
 
 /*	EratosthenesSieve
 	HELPER: for Algorithm 4.1 Sequential Portion
@@ -67,60 +55,16 @@ cudaError_t algorithm4_1(big n);
 	All CUDA-related functionality goes here.
 	This code will change for different kernel versions.
 */
-cudaError_t parallelSieve(
-	big n, big k, big m, const Wheel_k &wheel, big range);
+cudaError_t parallelSieve(big n, big range);
 
 /* Frees the memory allocated on the device and returns any errors*/
-cudaError_t cleanup(bool *d_S, Wheel_k &wheel, cudaError_t cudaStatus);
+cudaError_t cleanup(bool *d_S, cudaError_t cudaStatus);
 
 /* Set a checkpoint and show the total running time in seconds */
 double report_running_time(const char *arr);
 
 
 // DEVICE MATH FUNCTIONS---------------------------------
-
-/*	gcd_d
-	Device version of the Euclidean Method
-	find number c such that: a = sc, b = tc
-*/
-__device__ big gcd_d(big a, big b)
-{
-   big tmp;
-   
-   while (b!=0)
-   {
-      tmp = a;
-      a = b;
-      b = tmp%b;
-   }
-   return a;
-}
-
-/*	gcd_d
-	Device version of the Binary Method
-	with bit arithmetic
-	*/
-/*
-__device__ big gcd_d(big u, big v)
-{
-	big g = 1;
-
-	while ((u % 2 == 0) && (v % 2 == 0))
-	{
-		g <<= 1;
-		u >>= 1;
-		v >>= 1;
-	}
-
-	while (u != 0 && v != 0)
-		if (u % 2 == 0) u >>= 1;
-		else if (v % 2 == 0) v >>= 1;
-		else if (u > v) u = (u - v) >> 1;
-		else v = (v - u) >> 1;
-
-	return (g * (u + v));
-}
-*/
 
 /*	sqrt_d
 	Device version of the Square Root Function
@@ -151,144 +95,45 @@ __device__ big max_d(big a, big b)
 
 
 // ALGORITHM 4.1 KERNEL VERSIONS-------------------------
-
-/*	Algorithm 4.1: Parallel Sieve Kernel version 1
-	Parallelization: O(sqrt(n)) processors
-	Space: O(sqrt(n)) up to O(sqrt(n)/log log n)
-	PRAM Mode: Exclusive Read, Exclusive Write (EREW)
-	Remarks: No optimizations yet performed.
-	For n = 1 billion, it uses 31623 threads
+/*	
+	Parallel Sieve Kernel
 */
 __global__ void parallelSieveKernel(
-	big n, big k, big m, Wheel_k d_wheel, big range, bool *d_S)
-{
-	big sqrt_N = sqrt_d(n);
-
-	// Express the sieve in thread mode.
-	big i = threadIdx.x + blockIdx.x * blockDim.x;
-
-	// Threads beyond n will not do work.
-	if (i <= n)
-	{
-		big L = range * i + 1;
-		big R = min_d(range * (i + 1), n);
-
-		/* Range Sieving */
-		for (big x = L; x < R; x++)
-			d_S[x] = d_wheel.rp[x % m];
-
-		/* For every prime from prime[k] up to sqrt(N) */
-		for (big q = k; q < sqrt_N; q++)
-		{
-			if (d_S[q])
-			{
-				/* Compute smallest f s.t.
-				gcd_d(qf, m) == 1,
-				qf >= max_d(L, q^2) */
-				big f = max_d(q - 1, (big)((L / q) - 1));
-
-				/* f = f + W_k[f mod m].dist */
-				f += d_wheel.dist[f % m];
-
-				/* Remove the multiples of current prime */
-				while ((q * f) <= R)
-				{
-					// EREW Precaution. May need to be atomic operation.
-					if (!(d_S[q * f])) d_S[q * f] = false;
-					f += d_wheel.dist[f % m];
-				}
-			}
-		}
-	}
-	
-}
-
-/*	TODO: Algorithm 4.1: Parallel Sieve Kernel version 2
-	Remarks: Prime table S within [0, sqrt(n)] migrated to const memory
-			 Wheel completely migrated to const memory
-	Beware that const memory is only 64kB.
-	Benchmark with the Profiler first before creating this!
-*/
-__global__ void parallelSieveKernel2(
-	big n, big k, big m, Wheel_k d_wheel, big range, bool *d_S)
+	big n, big range, bool *d_S)
 {
 	// Shared memory use for S in range of thread
-	extern __shared__ bool shared_range[];
+	int j;
+	big f;
 
-	// Initialize to True
-	if (threadIdx.x == 0)
-	{
-		for (int j = 0; j < range; j++)
-		{
-			shared_range[j] = true;
-		}
-	}
-
-	__syncthreads();
-
+	// Generate required values
 	big sqrt_N = sqrt_d(n);
 
-	// Express the sieve in thread mode.
+	// Thread id
 	big i = threadIdx.x + blockIdx.x * blockDim.x;
 
-	// Threads beyond n will not do work.
-	if (i <= n)
+	// Find left and right range
+	big L = range * i + sqrt_N;
+	big R = range + L;
+
+	// Sieve
+	for (j = 0; j < sqrt_N; j++)
 	{
-		big L = range * i + 1;
-		big R = min_d(range * (i + 1), n);
-
-		/* Range Sieving */
-		for (big x = L; x < R; x++)
-			shared_range[x - L] = d_wheel.rp[x % m];
-
-		/* For every prime from prime[k] up to sqrt(N) */
-		for (big q = k; q < sqrt_N; q++)
+		// For each prime number
+		if (d_S[j])
 		{
-			if (d_S[q])
+			// Calculate smallest f
+			f = L / j;
+
+			while (j * f <= R)
 			{
-				/* Compute smallest f s.t.
-				gcd_d(qf, m) == 1,
-				qf >= max_d(L, q^2) */
-				big f = max_d(q - 1, (big)((L / q) - 1));
-
-				/* f = f + W_k[f mod m].dist */
-				f += d_wheel.dist[f % m];
-
-				/* Remove the multiples of current prime */
-				while ((q * f) <= R)
-				{
-					// EREW Precaution. May need to be atomic operation.
-					if (!(shared_range[(q * f) - L])) shared_range[(q * f) - L] = false;
-					f += d_wheel.dist[f % m];
-				}
-			}
-		}
-
-		__syncthreads();
-
-		/* Copy shared into global */
-		if (threadIdx.x == 0)
-		{
-			for (int j = 0; j < range; j++)
-			{
-				d_S[j + L] = shared_range[j];
+				d_S[j * f] = false;
+				f++;
 			}
 		}
 	}
-	
-}
 
-/*	TODO: Algorithm 4.1: Parallel Sieve Kernel version 3
-	Remarks: Prime table S within [0, sqrt(n)] migrated to const memory
-			 Wheel completely migrated to const memory
-			 Probable use of the shared memory
-			 Probable use of registers
-	Beware that register is only 4B or 32b.
-	Beware that const memory is only 64kB.
-	Benchmark with the Profiler first before creating this!
-*/
-__global__ void parallelSieveKernel3(
-	big n, big k, big m, Wheel_k d_wheel, big range, bool *d_S);
+	return;
+}
 
 /*	MAIN
 	To run this add the ff. args:
@@ -307,12 +152,12 @@ int main(int argc, char **argv)
 	cudaError_t x = algorithm4_1(N);
 
 	/* check the total running time */ 
-	report_running_time("Algorithm 4.1");
+	report_running_time("CUDA Parallel Sieve");
 
 	if (check_cuda_status)
 	{
 		if (x != cudaSuccess) {
-			printf("Algorithm 4.1 failed to execute!");
+			printf("CUDA Parallel Sieve failed to execute!");
 			return 1;
 		}
 	}
@@ -328,44 +173,7 @@ int main(int argc, char **argv)
 
 // HOST FUNCTION DEFINITIONS-----------------------------
 
-// Euclidean Method
-__host__ big gcd(big u, big v)
-{
-	big tmp;
-   
-	while (v != 0)
-	{
-		tmp = u;
-		u = v;
-		v = tmp%v;
-	}
-	return u;
-}
-
-// Binary Method
-/*
-__host__ big gcd(big u, big v)
-{
-	big g = 1;
-
-	while ((u % 2 == 0) && (v % 2 == 0))
-	{
-		g <<= 1;
-		u >>= 1;
-		v >>= 1;
-	}
-
-	while (u != 0 && v != 0)
-		if (u % 2 == 0) u >>= 1;
-		else if (v % 2 == 0) v >>= 1;
-		else if (u > v) u = (u - v) >> 1;
-		else v = (v - u) >> 1;
-
-	return (g * (u + v));
-}
-*/
-
-big EratosthenesSieve(long double k, big n)
+void EratosthenesSieve(long double k, big n)
 {
 	big kthPrime = 0;
 
@@ -382,12 +190,8 @@ big EratosthenesSieve(long double k, big n)
 			for (j = i*i; j < n; j += i)
 				S[j] = false;
 		}
-
-	// Find the k-th prime.
-	for (big i = k; i > 2; i--)
-		if (S[i]) kthPrime = i;
       
-   return kthPrime;
+   return;
 }
 
 cudaError_t algorithm4_1(big n)
@@ -395,44 +199,15 @@ cudaError_t algorithm4_1(big n)
 	/* VARIABLES */
 	big range;
 	big sqrt_N = (big)sqrtl((long double)n);
-	Wheel_k wheel;
 
-	/* Allocation of wheel */
-	wheel.rp = new bool[n];
-	wheel.dist = new big[n];
-
-	/* Find the first k primes
-	   K = maximal s.t. S[K] <= (log N) / 4
-	   Find primes up to sqrt(N) */
-	big k = EratosthenesSieve(log10l((long double)n) / 4, n);
-
-	/* Find the product of the first k primes m */
-	big m = 1;
-	for (big ii = 0; ii < k; ii++)
-		if (S[ii]) m *= ii;
-
-	/* Compute k-th wheel W_k
-	   FUTURE OPTIMIZATION: Delegate kernel for computation */
-	for (big x = 0; x < n; x++)
-	{
-		// True if rp[x] is relatively prime to m
-		wheel.rp[x] = (gcd(x, m) == 1);
-
-		/* This is d s.t. x + d is
-		the smallest integer >dist[x]
-		relatively prime to m */
-		int d = 0;
-		while (gcd(x + d, m) != 1)
-			d++;
-
-		wheel.dist[x] = d;
-	}
+	/* Find the first k primes up to sqrt(N) */
+	big k = EratosthenesSieve(n);
 
 	/* Delta = ceil(n/p) */
 	range = (big)ceill(n / (long double)P);
 
 	/* PARALLEL PART */
-	cudaError_t parallelStatus = parallelSieve(n, k, m, wheel, range);
+	cudaError_t parallelStatus = parallelSieve(n, range);
 	if (check_cuda_status)
 	{
 		if (parallelStatus != cudaSuccess) {
@@ -440,15 +215,10 @@ cudaError_t algorithm4_1(big n)
 		}
 	}
 
-	/* FREE */
-	delete[] wheel.rp;
-	delete[] wheel.dist;
-
 	return parallelStatus;
 }
 
-cudaError_t parallelSieve(
-	big n, big k, big m, const Wheel_k &wheel, big range)
+cudaError_t parallelSieve(big n, big range)
 {
 	cudaError_t cudaStatus;
 	cudaEvent_t start, stop;
@@ -461,13 +231,6 @@ cudaError_t parallelSieve(
 	   OPTIMIZATION: [0, sqrt(n)] will be migrated to CONSTANT memory
 	*/
 	bool * d_S = NULL;
-
-	// The Wheel Precomputed Table
-	// will be migrated to GLOBAL memory
-	// OPTIMIZATION: may be migrated to CONSTANT memory as well
-	Wheel_k d_wheel;
-	d_wheel.rp = NULL;
-	d_wheel.dist = NULL;
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(0);
@@ -488,25 +251,7 @@ cudaError_t parallelSieve(
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed on number field S!\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
-		}
-	}
-
-	cudaStatus = cudaMalloc((void**)&(d_wheel.rp), n * sizeof(bool));
-	if (check_cuda_status)
-	{
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMalloc failed on wheel.rp!\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
-		}
-	}
-
-	cudaStatus = cudaMalloc((void**)&(d_wheel.dist), n * sizeof(big));
-	if (check_cuda_status)
-	{
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMalloc failed on wheel.dist!\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
+			return cleanup(d_S, cudaStatus);
 		}
 	}
 
@@ -516,25 +261,7 @@ cudaError_t parallelSieve(
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed! S->d_S.\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
-		}
-	}
-
-	cudaStatus = cudaMemcpy(d_wheel.rp, wheel.rp, n * sizeof(bool), cudaMemcpyHostToDevice);
-	if (check_cuda_status)
-	{
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed! wheel.rp->d_wheel.rp\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
-		}
-	}
-
-	cudaStatus = cudaMemcpy(d_wheel.dist, wheel.dist, n * sizeof(big), cudaMemcpyHostToDevice);
-	if (check_cuda_status)
-	{
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed! wheel.dist->d_wheel.dist\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
+			return cleanup(d_S, cudaStatus);
 		}
 	}
 
@@ -543,14 +270,14 @@ cudaError_t parallelSieve(
 	dim3 blockSize(256, 1, 1);
 
 	//parallelSieveKernel<<<gridSize, blockSize>>>(n, k, m, wheel, range, d_S);
-	parallelSieveKernel2<<<gridSize, blockSize, range>>>(n, k, m, wheel, range, d_S);
+	parallelSieveKernel<<<gridSize, blockSize>>>(n, range, d_S);
 
 	cudaStatus = cudaGetLastError();
 	if (check_cuda_status)
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "parallelSieveKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-			return cleanup(d_S, d_wheel, cudaStatus);
+			return cleanup(d_S, cudaStatus);
 		}
 	}
 
@@ -559,7 +286,7 @@ cudaError_t parallelSieve(
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-			return cleanup(d_S, d_wheel, cudaStatus);
+			return cleanup(d_S, cudaStatus);
 		}
 	}
 
@@ -569,7 +296,7 @@ cudaError_t parallelSieve(
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed! d_S->S.\n");
-			return cleanup(d_S, d_wheel, cudaStatus);
+			return cleanup(d_S, cudaStatus);
 		}
 	}
 
@@ -581,14 +308,12 @@ cudaError_t parallelSieve(
 	printf("Time to generate: %0.5f ms\n", elapsedTime);
 
 	// cudaFree
-	return cleanup(d_S, d_wheel, cudaStatus);
+	return cleanup(d_S, cudaStatus);
 }
 
-cudaError_t cleanup(bool *d_S, Wheel_k &wheel, cudaError_t cudaStatus)
+cudaError_t cleanup(bool *d_S, cudaError_t cudaStatus)
 {
 	cudaFree(d_S);
-	cudaFree(wheel.rp);
-	cudaFree(wheel.dist);
 	return cudaStatus;
 }
 
