@@ -104,7 +104,6 @@ __global__ void parallelSieveKernel(
 	// Shared memory use for S in range of thread
 	int j;
 	big f;
-	__shared__ bool primes[48000];
 
 	// Generate required values
 	big sqrt_N = sqrt_d(n);
@@ -115,13 +114,6 @@ __global__ void parallelSieveKernel(
 	// Find left and right range
 	big L = range * i + sqrt_N;
 	big R = range + L;
-
-	if (i == 0)
-	{
-		for (int i=0; i<=48000; i++)
-			primes[i] = d_S[i];
-	}
-	__syncthreads();
 
 	// Sieve
 	for (j = 0; j < sqrt_N; j++)
