@@ -127,7 +127,7 @@ __global__ void parallelSieveKernel(
 	for (j = 0; j < sqrt_N; j++)
 	{
 		// For each prime number
-		if (d_S[j])
+		if (j<=48000 && primes[j] || d_S[j])
 		{
 			// Calculate smallest f
 			f = L / j;
