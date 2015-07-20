@@ -8,11 +8,14 @@
    Daniel Anzaldo
    David Frank
    Antonio Lanfranchi
+
+   Constant Memory Version.
 */
 
 // Visual Studio Dependencies (Can be commented out)
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "device_functions.h"
 
 // C dependencies
 #include <stdio.h>
@@ -23,11 +26,16 @@
 // C++ dependencies
 #include <algorithm>
 
+// Preprocessor Constants
+#define CONST_MEM_SIZE 64000
+#define SHARED_MEM_SIZE 48000
+
 typedef unsigned long long big;
 
 // GLOBAL VARIABLES--------------------------------------
 bool * S;	// Global shared bit array of numbers up to N
 int P;		// Global number of processors
+__constant__ bool c_S[CONST_MEM_SIZE];	// table of the first 64000 primes
 
 bool check_cuda_status = false; // turn to false when running on circe
 
@@ -57,10 +65,10 @@ cudaError_t algorithm4_1(big n);
 */
 cudaError_t parallelSieve(big n, big range);
 
-/* Frees the memory allocated on the device and returns any errors*/
+/*	Frees the memory allocated on the device and returns any errors */
 cudaError_t cleanup(bool *d_S, cudaError_t cudaStatus);
 
-/* Set a checkpoint and show the total running time in seconds */
+/*	Set a checkpoint and show the total running time in seconds */
 double report_running_time(const char *arr);
 
 
@@ -72,20 +80,20 @@ double report_running_time(const char *arr);
 */
 __device__ big sqrt_d(big a)
 {
-   big root = a/2;
+	big root = a/2;
    
 #pragma unroll
-   for (big n = 0; n < 10; n++)
-   {
-      root = 0.5 * (root + (a/root));
-   }
+	for (big n = 0; n < 10; n++)
+	{
+		root = 0.5 * (root + (a/root));
+	}
    
-   return root;
+	return root;
 }
 
 __device__ big min_d(big a, big b)
 {
-   return (a < b) ? a : b;
+	return (a < b) ? a : b;
 }
 
 __device__ big max_d(big a, big b)
@@ -97,48 +105,48 @@ __device__ big max_d(big a, big b)
 // ALGORITHM 4.1 KERNEL VERSIONS-------------------------
 /*	
 	Parallel Sieve Kernel
+	With Constant Memory
 */
 __global__ void parallelSieveKernel(
 	big n, big range, bool *d_S)
 {
 	// Shared memory use for S in range of thread
-	int j;
-	big f;
-	__shared__ bool primes[48000];
-
-	// Generate required values
-	big sqrt_N = sqrt_d(n);
+	__shared__ bool sievingRange[SHARED_MEM_SIZE];
 
 	// Thread id
 	big i = threadIdx.x + blockIdx.x * blockDim.x;
+	int j;	// Constant Memory Accessor
+	big f;	// Multiplier of prime in const memory
 
 	// Find left and right range
-	big L = range * i + sqrt_N;
+	big L = range * i;
 	big R = range + L;
 
-	if (threadIdx.x == 0)
+	// Thread Sieve
+	for (j = 0; j < CONST_MEM_SIZE; j++)
 	{
-		for (int i=0; i<=48000; i++)
-			primes[i] = d_S[i];
-	}
-	__syncthreads();
-
-	// Sieve
-	for (j = 0; j < sqrt_N; j++)
-	{
-		// For each prime number
-		if (j<=48000 && primes[j] || d_S[j])
+		// For each prime number in constant memory
+		if (j <= CONST_MEM_SIZE && c_S[j])
 		{
-			// Calculate smallest f
+			/* Calculate smallest multiple j * f
+			within the range of [L,R]*/
 			f = L / j;
 
-			while (j * f <= R)
+			// Write results to shared memory
+			while ((j * f - CONST_MEM_SIZE) <= R)
 			{
-				d_S[j * f] = false;
+				sievingRange[j * f - CONST_MEM_SIZE] = false;
 				f++;
 			}
 		}
 	}
+
+	// Commit range changes to global memory
+	for (j = L; j < R; j++)
+	{
+		d_S[j] = sievingRange[j - L];
+	}
+	__syncthreads();
 
 	return;
 }
@@ -150,10 +158,18 @@ __global__ void parallelSieveKernel(
 int main(int argc, char **argv)
 {
 	big N = (big)strtoull(argv[1], NULL, 10);
+	
+	printf("Find primes up to: %llu\n\n", N);
+
+	/* Program's Limitation */
+	if (sqrtl((long double)N) > CONST_MEM_SIZE)
+	{
+		printf("ERROR: sqrt(N) exceeds available constant memory.");
+		return EXIT_FAILURE;
+	}
+
 	S = new bool[N]; //(bool*)malloc(N * sizeof(bool));
 
-	printf("Find primes up to: %llu\n\n", N);
-	
 	/* start counting time */
 	gettimeofday(&startTime, &myTimezone);
 
@@ -166,7 +182,7 @@ int main(int argc, char **argv)
 	{
 		if (x != cudaSuccess) {
 			printf("CUDA Parallel Sieve failed to execute!");
-			return 1;
+			return EXIT_FAILURE;
 		}
 	}
 
@@ -175,7 +191,7 @@ int main(int argc, char **argv)
 		if (S[i]) printf("%llu ", i);
 
 	delete[] S;
-    return 0;
+	return EXIT_SUCCESS;
 }
 
 
@@ -199,7 +215,7 @@ void EratosthenesSieve(long double k, big n)
 				S[j] = false;
 		}
       
-   return;
+	return;
 }
 
 cudaError_t algorithm4_1(big n)
@@ -234,9 +250,9 @@ cudaError_t parallelSieve(big n, big range)
 	cudaEventCreate(&stop);
 
 	/* The Number Field S
-	   will be migrated to GLOBAL memory
-	   OPTIMIZATION: ranges will be migrated to SHARED memory
-	   OPTIMIZATION: [0, sqrt(n)] will be migrated to CONSTANT memory
+		will be migrated to GLOBAL memory
+		OPTIMIZATION: ranges will be migrated to SHARED memory
+		OPTIMIZATION: [0, sqrt(n)] will be migrated to CONSTANT memory
 	*/
 	bool * d_S = NULL;
 
@@ -254,7 +270,7 @@ cudaError_t parallelSieve(big n, big range)
 	cudaEventRecord(start, 0);
 
 	// CUDA Memory Allocations.
-	cudaStatus = cudaMalloc((void**)&d_S, n * sizeof(bool));
+	cudaStatus = cudaMalloc((void**)&d_S, (n - CONST_MEM_SIZE) * sizeof(bool));
 	if (check_cuda_status)
 	{
 		if (cudaStatus != cudaSuccess) {
@@ -263,12 +279,23 @@ cudaError_t parallelSieve(big n, big range)
 		}
 	}
 
-	//  cudaMemCpy -> Device
-	cudaStatus = cudaMemcpy(d_S, S, n * sizeof(bool), cudaMemcpyHostToDevice);
+	// cudaMemCpy -> Device
+	// Pointer Arithmetic Copy: Hope it works!
+	cudaStatus = cudaMemcpy(d_S, S + CONST_MEM_SIZE, (n - CONST_MEM_SIZE) * sizeof(bool), cudaMemcpyHostToDevice);
 	if (check_cuda_status)
 	{
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMemcpy failed! S->d_S.\n");
+			return cleanup(d_S, cudaStatus);
+		}
+	}
+
+	// cudaMemCpyToSymbol -> Device Constant Memory
+	cudaStatus = cudaMemcpyToSymbol(c_S, S, CONST_MEM_SIZE * sizeof(bool));
+	if (check_cuda_status)
+	{
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpyToSymbol failed! S->c_S.\n");
 			return cleanup(d_S, cudaStatus);
 		}
 	}
@@ -299,7 +326,8 @@ cudaError_t parallelSieve(big n, big range)
 	}
 
 	// cudaMemCpy -> Host
-	cudaStatus = cudaMemcpy(S, d_S, n * sizeof(bool), cudaMemcpyDeviceToHost);
+	// Pointer Arithmetic Return: Hope it works!
+	cudaStatus = cudaMemcpy(S + CONST_MEM_SIZE, d_S, (n - CONST_MEM_SIZE) * sizeof(bool), cudaMemcpyDeviceToHost);
 	if (check_cuda_status)
 	{
 		if (cudaStatus != cudaSuccess) {
