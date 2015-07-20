@@ -248,7 +248,6 @@ cudaError_t algorithm4_1(big n)
 
 cudaError_t parallelSieve(big n, big range)
 {
-	big sqrt_N = (big)sqrtl((long double)n);	// ADDED
 	cudaError_t cudaStatus;
 	cudaEvent_t start, stop;
 	cudaEventCreate(&start);
@@ -306,10 +305,9 @@ cudaError_t parallelSieve(big n, big range)
 	}
 
 	// Kernel Call
-	dim3 gridSize(ceill(ceill(sqrt_N)/256), 1, 1);
+	dim3 gridSize(ceill(P/256), 1, 1);
 	dim3 blockSize(256, 1, 1);
 
-	//parallelSieveKernel<<<gridSize, blockSize>>>(n, k, m, wheel, range, d_S);
 	parallelSieveKernel<<<gridSize, blockSize>>>(n, range, d_S);
 
 	cudaStatus = cudaGetLastError();
