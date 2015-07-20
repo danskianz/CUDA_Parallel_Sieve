@@ -51,7 +51,7 @@ struct timeval startTime, endTime;
 	Used to help find the first k primes.
 	Returns the k-th prime.
 */
-big EratosthenesSieve(long double x);
+void EratosthenesSieve(big n);
 
 /*	Algorithm 4.1 Sequential Portion
 	Running Time: O(sqrt(n))
@@ -101,6 +101,15 @@ __device__ big max_d(big a, big b)
 	return (a > b) ? a : b;
 }
 
+__device__ void markComposites(big p, big n, bool *d_S)
+{
+	big c = 2;
+	for (; c*p <= n; c++)
+	{
+		d_S[c*p] = 0;
+	}
+
+}
 
 // ALGORITHM 4.1 KERNEL VERSIONS-------------------------
 /*	
@@ -110,44 +119,16 @@ __device__ big max_d(big a, big b)
 __global__ void parallelSieveKernel(
 	big n, big range, bool *d_S)
 {
-	// Shared memory use for S in range of thread
-	__shared__ bool sievingRange[SHARED_MEM_SIZE];
+	big sqrt_N = sqrt_d(n);
 
 	// Thread id
 	big i = threadIdx.x + blockIdx.x * blockDim.x;
-	int j;	// Constant Memory Accessor
-	big f;	// Multiplier of prime in const memory
 
-	// Find left and right range
-	big L = range * i;
-	big R = range + L;
-
-	// Thread Sieve
-	for (j = 0; j < CONST_MEM_SIZE; j++)
+	// for each prime, spawn a kernel to mark its composites
+	if (i < sqrt_N && d_S[i])
 	{
-		// For each prime number in constant memory
-		if (j <= CONST_MEM_SIZE && c_S[j])
-		{
-			/* Calculate smallest multiple j * f
-			within the range of [L,R]*/
-			f = L / j;
-
-			// Write results to shared memory
-			while ((j * f - CONST_MEM_SIZE) <= R)
-			{
-				sievingRange[j * f - CONST_MEM_SIZE] = false;
-				f++;
-			}
-		}
-	}
-
-	// Commit range changes to global memory
-	for (j = L; j < R; j++)
-	{
-		d_S[j] = sievingRange[j - L];
-	}
-	__syncthreads();
-
+		markComposites(i, n, d_S);
+	}	
 	return;
 }
 
@@ -197,9 +178,8 @@ int main(int argc, char **argv)
 
 // HOST FUNCTION DEFINITIONS-----------------------------
 
-void EratosthenesSieve(long double k, big n)
+void EratosthenesSieve(big n)
 {
-	big kthPrime = 0;
 
 	// 0 and 1 are non-primes.
 	S[0] = S[1] = false;
@@ -225,7 +205,7 @@ cudaError_t algorithm4_1(big n)
 	big sqrt_N = (big)sqrtl((long double)n);
 
 	/* Find the first k primes up to sqrt(N) */
-	big k = EratosthenesSieve(n);
+	EratosthenesSieve(n);
 
 	/* Delta = ceil(n/p) */
 	range = (big)ceill(n / (long double)P);
