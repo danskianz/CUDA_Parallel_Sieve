@@ -51,7 +51,7 @@ struct timeval startTime, endTime;
 	Used to help find the first k primes.
 	Returns the k-th prime.
 */
-big EratosthenesSieve(long double x);
+void EratosthenesSieve(big n);
 
 /*	Algorithm 4.1 Sequential Portion
 	Running Time: O(sqrt(n))
@@ -122,31 +122,34 @@ __global__ void parallelSieveKernel(
 	big L = range * i;
 	big R = range + L;
 
-	// Thread Sieve
-	for (j = 0; j < CONST_MEM_SIZE; j++)
+	if (i <= n)
 	{
-		// For each prime number in constant memory
-		if (j <= CONST_MEM_SIZE && c_S[j])
+		// Thread Sieve
+		for (j = 0; j < CONST_MEM_SIZE; j++)
 		{
-			/* Calculate smallest multiple j * f
-			within the range of [L,R]*/
-			f = L / j;
-
-			// Write results to shared memory
-			while ((j * f - CONST_MEM_SIZE) <= R)
+			// For each prime number in constant memory
+			if (j <= CONST_MEM_SIZE && c_S[j])
 			{
-				sievingRange[j * f - CONST_MEM_SIZE] = false;
-				f++;
+				/* Calculate smallest multiple j * f
+				within the range of [L,R]*/
+				f = L / j;
+
+				// Write results to shared memory
+				while ((j * f - CONST_MEM_SIZE) <= R)
+				{
+					sievingRange[j * f - CONST_MEM_SIZE] = false;
+					f++;
+				}
 			}
 		}
-	}
 
-	// Commit range changes to global memory
-	for (j = L; j < R; j++)
-	{
-		d_S[j] = sievingRange[j - L];
+		// Commit range changes to global memory
+		for (j = L; j < R; j++)
+		{
+			d_S[j] = sievingRange[j - L];
+		}
+		__syncthreads();
 	}
-	__syncthreads();
 
 	return;
 }
@@ -197,7 +200,7 @@ int main(int argc, char **argv)
 
 // HOST FUNCTION DEFINITIONS-----------------------------
 
-void EratosthenesSieve(long double k, big n)
+void EratosthenesSieve(big n)
 {
 	big kthPrime = 0;
 
@@ -206,15 +209,15 @@ void EratosthenesSieve(long double k, big n)
 	for (big i = 2; i < n; i++)
 		S[i] = true;
 
-	// Simple Sieving Operation.
+	// Simple Sieving Operation. MODIFIED.
 	for (big i = 2; i < (big)sqrtl(n); i++)
 		if (S[i])
 		{
 			int j;
-			for (j = i*i; j < n; j += i)
+			for (j = i*i; j < CONST_MEM_SIZE; j += i)
 				S[j] = false;
 		}
-      
+
 	return;
 }
 
@@ -225,7 +228,7 @@ cudaError_t algorithm4_1(big n)
 	big sqrt_N = (big)sqrtl((long double)n);
 
 	/* Find the first k primes up to sqrt(N) */
-	big k = EratosthenesSieve(n);
+	EratosthenesSieve(n);
 
 	/* Delta = ceil(n/p) */
 	range = (big)ceill(n / (long double)P);
